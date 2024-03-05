@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"stable_diffusion_bot/databases/sqlite"
 	"stable_diffusion_bot/discord_bot"
 	"stable_diffusion_bot/imagine_queue"
@@ -14,9 +15,9 @@ import (
 
 // Bot parameters
 var (
-	guildID            = flag.String("guild", "", "Guild ID. If not passed - bot registers commands globally")
-	botToken           = flag.String("token", "", "Bot access token")
-	apiHost            = flag.String("host", "", "Host for the Automatic1111 API")
+	guildID            = os.Getenv("DISCORD_GUILDID")
+	botToken           = os.Getenv("DISCORD_TOKEN")
+	apiHost            = os.Getenv("SD_API_HOST")
 	imagineCommand     = flag.String("imagine", "imagine", "Imagine command name. Default is \"imagine\"")
 	removeCommandsFlag = flag.Bool("remove", false, "Delete all commands when bot exits")
 	devModeFlag        = flag.Bool("dev", false, "Start in development mode, using \"dev_\" prefixed commands instead")
@@ -25,16 +26,16 @@ var (
 func main() {
 	flag.Parse()
 
-	if guildID == nil || *guildID == "" {
-		log.Fatalf("Guild ID flag is required")
+	if guildID == "" {
+		log.Fatalf("Guild ID is required")
 	}
 
-	if botToken == nil || *botToken == "" {
-		log.Fatalf("Bot token flag is required")
+	if botToken == "" {
+		log.Fatalf("Bot token is required")
 	}
 
-	if apiHost == nil || *apiHost == "" {
-		log.Fatalf("API host flag is required")
+	if apiHost == "" {
+		log.Fatalf("API host is required")
 	}
 
 	if imagineCommand == nil || *imagineCommand == "" {
@@ -56,8 +57,9 @@ func main() {
 	}
 
 	stableDiffusionAPI, err := stable_diffusion_api.New(stable_diffusion_api.Config{
-		Host: *apiHost,
+		Host: apiHost,
 	})
+
 	if err != nil {
 		log.Fatalf("Failed to create Stable Diffusion API: %v", err)
 	}
@@ -90,12 +92,13 @@ func main() {
 
 	bot, err := discord_bot.New(discord_bot.Config{
 		DevelopmentMode: devMode,
-		BotToken:        *botToken,
-		GuildID:         *guildID,
+		BotToken:        botToken,
+		GuildID:         guildID,
 		ImagineQueue:    imagineQueue,
 		ImagineCommand:  *imagineCommand,
 		RemoveCommands:  removeCommands,
 	})
+
 	if err != nil {
 		log.Fatalf("Error creating Discord bot: %v", err)
 	}

@@ -10,6 +10,6 @@ services:
       - ./sd_discord_bot.sqlite:/app/sd_discord_bot.sqlite
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - SD_URL=${SD_URL}
-      - DISCORD_GUILD=${DISCORD_GUILD}
-    command: -token ${DISCORD_TOKEN} -host ${SD_URL} -guild ${DISCORD_GUILD}
+      - SD_API_HOST=${SD_API_HOST}
+      - DISCORD_GUILDID=${DISCORD_GUILDID}
+    command: -token ${DISCORD_TOKEN} -host ${SD_API_HOST} -guild ${DISCORD_GUILDID}
