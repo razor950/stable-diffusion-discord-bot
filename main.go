@@ -91,12 +91,13 @@ func main() {
 	}
 
 	bot, err := discord_bot.New(discord_bot.Config{
-		DevelopmentMode: devMode,
-		BotToken:        botToken,
-		GuildID:         guildID,
-		ImagineQueue:    imagineQueue,
-		ImagineCommand:  *imagineCommand,
-		RemoveCommands:  removeCommands,
+		DevelopmentMode:    devMode,
+		BotToken:           botToken,
+		GuildID:            guildID,
+		ImagineQueue:       imagineQueue,
+		ImagineCommand:     *imagineCommand,
+		RemoveCommands:     removeCommands,
+		StableDiffusionAPI: stableDiffusionAPI,
 	})
 
 	if err != nil {
