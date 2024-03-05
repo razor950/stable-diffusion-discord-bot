@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
+
 	"stable_diffusion_bot/databases/sqlite"
 	"stable_diffusion_bot/discord_bot"
 	"stable_diffusion_bot/imagine_queue"
@@ -15,16 +16,27 @@ import (
 
 // Bot parameters
 var (
-	guildID            = os.Getenv("DISCORD_GUILDID")
-	botToken           = os.Getenv("DISCORD_TOKEN")
-	apiHost            = os.Getenv("SD_API_HOST")
+	guildIDFlag        = flag.String("guild", "", "Guild ID. If not passed - bot registers commands globally")
+	botTokenFlag       = flag.String("token", "", "Bot access token")
+	apiHostFlag        = flag.String("host", "", "Host for the Automatic1111 API")
 	imagineCommand     = flag.String("imagine", "imagine", "Imagine command name. Default is \"imagine\"")
 	removeCommandsFlag = flag.Bool("remove", false, "Delete all commands when bot exits")
 	devModeFlag        = flag.Bool("dev", false, "Start in development mode, using \"dev_\" prefixed commands instead")
 )
 
+func getFlagValue(flag *string, envVar string) string {
+	if flag != nil && *flag != "" {
+		return *flag
+	}
+	return os.Getenv(envVar)
+}
+
 func main() {
 	flag.Parse()
+
+	guildID := getFlagValue(guildIDFlag, "DISCORD_GUILDID")
+	botToken := getFlagValue(botTokenFlag, "DISCORD_TOKEN")
+	apiHost := getFlagValue(apiHostFlag, "SD_API_HOST")
 
 	if guildID == "" {
 		log.Fatalf("Guild ID is required")
