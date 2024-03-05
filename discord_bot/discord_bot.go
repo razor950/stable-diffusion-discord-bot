@@ -48,7 +48,7 @@ func (b *botImpl) imagineExtCommandString() string {
 		return "dev_" + b.imagineCommand + "_ext"
 	}
 
-	return b.imagineCommand + `_ext`
+	return b.imagineCommand + "_ext"
 }
 
 func (b *botImpl) imagineSettingsCommandString() string {
