@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./sd_discord_bot.sqlite:/app/sd_discord_bot.sqlite
-    env_file:
-      - .env
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - SD_URL=${SD_URL}
+      - DISCORD_GUILD=${DISCORD_GUILD}
     command: -token ${DISCORD_TOKEN} -host ${SD_URL} -guild ${DISCORD_GUILD}
