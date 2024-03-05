@@ -4,13 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 
 	"stable_diffusion_bot/entities"
 	"stable_diffusion_bot/imagine_queue"
 	"stable_diffusion_bot/stable_diffusion_api"
-
-	"strconv"
-	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -45,12 +44,11 @@ func (b *botImpl) imagineCommandString() string {
 }
 
 func (b *botImpl) imagineExtCommandString() string {
-	prefix := ``
 	if b.developmentMode {
-		prefix = `dev_`
+		return "dev_" + b.imagineCommand + "_ext"
 	}
 
-	return prefix + b.imagineCommand + `_ext`
+	return b.imagineCommand + `_ext`
 }
 
 func (b *botImpl) imagineSettingsCommandString() string {
@@ -764,8 +762,7 @@ func (b *botImpl) processImagineExtCommand(s *discordgo.Session, i *discordgo.In
 		log.Printf("Error adding imagine to queue: %v\n", queueError)
 	}
 
-	message := "DM usage is not allowed."
-	message = fmt.Sprintf(
+	message := fmt.Sprintf(
 		"I'm dreaming something up for you. You are currently #%d in line.\n<@%s> asked me to imagine `%s`.",
 		position,
 		userID,
