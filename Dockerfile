@@ -1,4 +1,4 @@
-FROM golang:1.19-alpine3.18 AS build
+FROM golang:1.21-alpine3.19 AS build
 
 # Set destination for COPY
 WORKDIR /usr/src/app
@@ -11,7 +11,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o stable_diffusion_bot
 
-FROM alpine:3.18 AS final
+FROM alpine:3.19 AS final
 
 WORKDIR /app
 
