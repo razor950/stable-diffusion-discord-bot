@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 )
 
 type apiImpl struct {
@@ -42,6 +43,20 @@ type TextToImageResponse struct {
 	Images   []string `json:"images"`
 	Seeds    []int    `json:"seeds"`
 	Subseeds []int    `json:"subseeds"`
+	Model    string   `json:"model"`
+}
+
+type Txt2ImgOverrideSettings struct {
+	// png, jpg, webp
+	GridFormat string `json:"grid_format,omitempty"`
+	ReturnGrid *bool  `json:"return_grid,omitempty"`
+	// png, jpg, webp
+	SamplesFormat string `json:"samples_format,omitempty"`
+	// new option since 04/29/2023 https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/9177
+	NegativeGuidanceMinimumSigma float32 `json:"s_min_uncond,omitempty"`
+
+	// this is in blacklist. See stable-diffusion-webui/modules/shared.py:124:restricted_opts
+	OutdirTxt2ImgSamples string `json:"outdir_txt2img_samples,omitempty"`
 }
 
 type TextToImageRequest struct {
@@ -51,6 +66,9 @@ type TextToImageRequest struct {
 	Height            int     `json:"height"`
 	RestoreFaces      bool    `json:"restore_faces"`
 	EnableHR          bool    `json:"enable_hr"`
+	HrScale           float32 `json:"hr_scale,omitempty"`
+	HrUpscaler        string  `json:"hr_upscaler,omitempty"`
+	HrSecondPassSteps int     `json:"hr_second_pass_steps,omitempty"`
 	HRResizeX         int     `json:"hr_resize_x"`
 	HRResizeY         int     `json:"hr_resize_y"`
 	DenoisingStrength float64 `json:"denoising_strength"`
@@ -62,6 +80,10 @@ type TextToImageRequest struct {
 	CfgScale          float64 `json:"cfg_scale"`
 	Steps             int     `json:"steps"`
 	NIter             int     `json:"n_iter"`
+
+	// Save sample images AND grid copies to output dir
+	SaveImages       bool                    `json:"save_images"`
+	OverrideSettings Txt2ImgOverrideSettings `json:"override_settings"`
 }
 
 func (api *apiImpl) TextToImage(req *TextToImageRequest) (*TextToImageResponse, error) {
@@ -121,7 +143,16 @@ func (api *apiImpl) TextToImage(req *TextToImageRequest) (*TextToImageResponse, 
 		Images:   respStruct.Images,
 		Seeds:    infoStruct.AllSeeds,
 		Subseeds: infoStruct.AllSubseeds,
+		Model:    extractModel(respStruct.Info),
 	}, nil
+}
+
+var modelRegex = regexp.MustCompile(`, (Model hash: \w+, Model: [^,]+),`)
+
+func extractModel(infoJson string) string {
+	// It's in "infotexts" string so using regex
+	// <...>"infotexts": ["prompt text\\n<...>, Size: 512x512, Model hash: 1d1e459f9f, Model: anything-v4.5, <...>"], <...>
+	return string(modelRegex.Find([]byte(infoJson)))
 }
 
 type UpscaleRequest struct {
@@ -246,4 +277,70 @@ func (api *apiImpl) GetCurrentProgress() (*ProgressResponse, error) {
 	}
 
 	return respStruct, nil
+}
+
+type Embedding struct {
+	// The number of steps that were used to train this embedding, if available
+	//Step int `json:"step"`
+	// The hash of the checkpoint this embedding was trained on, if available
+	SDCheckpoint string `json:"sd_checkpoint"`
+	// The name of the checkpoint this embedding was trained on, if available. Note that this is the name that was used by the trainer; for a stable identifier, use sd_checkpoint instead
+	SDCheckpointName string `json:"sd_checkpoint_name"`
+	// The length of each individual vector in the embedding
+	//Shape *int `json:"shape"`
+	// The number of vectors in the embedding
+	//Vectors *int `json:"vectors"`
+}
+
+type EmbeddingsResponseMinimal struct {
+	// Embeddings loaded for the current model
+	Loaded map[string]json.RawMessage
+}
+
+type EmbeddingsResponse struct {
+	// Embeddings loaded for the current model
+	Loaded map[string]Embedding
+	// Embeddings skipped for the current model (likely due to architecture incompatibility)
+	Skipped map[string]Embedding
+}
+
+type EmbeddingsResponseRaw struct {
+	EmbeddingsResponseMinimal
+	// Embeddings skipped for the current model (likely due to architecture incompatibility)
+	Skipped map[string]json.RawMessage
+}
+
+func (api *apiImpl) GetEmbeddings() (*EmbeddingsResponseMinimal, error) {
+	getURL := api.host + "/sdapi/v1/embeddings"
+
+	request, err := http.NewRequest("GET", getURL, bytes.NewBuffer([]byte{}))
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{}
+
+	response, err := client.Do(request)
+	if err != nil {
+		log.Printf("API URL: %s", getURL)
+		log.Printf("Error with API Request: %v", err)
+
+		return nil, err
+	}
+
+	defer response.Body.Close()
+
+	body, _ := io.ReadAll(response.Body)
+
+	resp := &EmbeddingsResponseMinimal{}
+
+	err = json.Unmarshal(body, &resp)
+	if err != nil {
+		log.Printf("API URL: %s", getURL)
+		log.Printf("Unexpected API response: %s", string(body))
+
+		return nil, err
+	}
+
+	return resp, nil
 }

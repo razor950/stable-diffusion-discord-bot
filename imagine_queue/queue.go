@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -91,8 +92,38 @@ const (
 	ItemTypeVariation
 )
 
+type QueueItemOptions struct {
+	Prompt            string
+	NegativePrompt    string
+	Width             int
+	Height            int
+	RestoreFaces      bool
+	EnableHR          bool
+	HiresWidth        int
+	HiresHeight       int
+	DenoisingStrength float64
+	SamplerName       string
+	CfgScale          float64
+	Steps             int
+	Seed              int
+}
+
+func NewQueueItemOptions() QueueItemOptions {
+	return QueueItemOptions{
+		NegativePrompt:    DefaultNegative,
+		RestoreFaces:      DefaultRestoreFaces,
+		EnableHR:          DefaultHiRes,
+		DenoisingStrength: DefaultDenoisingStrength,
+		SamplerName:       DefaultSampler,
+		CfgScale:          DefaultCFGScale,
+		Steps:             DefaultSteps,
+		Seed:              DefaultSeed,
+	}
+}
+
 type QueueItem struct {
 	Prompt             string
+	Options            QueueItemOptions
 	NegativePrompt     string
 	Type               ItemType
 	InteractionIndex   int
@@ -368,6 +399,19 @@ func extractDimensionsFromPrompt(prompt string, width, height int) (*dimensionsR
 	}, nil
 }
 
+const (
+	DefaultCFGScale          = 7
+	DefaultDenoisingStrength = 0.5
+	DefaultNegative          = "ugly, tiling, poorly drawn hands, poorly drawn feet, poorly drawn face, out of frame, " +
+		"mutation, mutated, extra limbs, extra legs, extra arms, disfigured, deformed, cross-eye, " +
+		"body out of frame, blurry, bad art, bad anatomy, blurred, text, watermark, grainy"
+	DefaultRestoreFaces = false
+	DefaultSampler      = "Euler a"
+	DefaultSteps        = 20
+	DefaultSeed         = -1
+	DefaultHiRes        = true
+)
+
 func (q *queueImpl) processCurrentImagine() {
 	go func() {
 		defer func() {
@@ -404,14 +448,6 @@ func (q *queueImpl) processCurrentImagine() {
 			return
 		}
 
-		var negativePrompt string
-
-		if q.currentImagine.NegativePrompt != "" {
-			negativePrompt = q.currentImagine.NegativePrompt
-		} else {
-			negativePrompt = q.botDefaultSettings.NegativePrompt
-		}
-
 		enableHR := false
 		hiresWidth := 0
 		hiresHeight := 0
@@ -425,20 +461,20 @@ func (q *queueImpl) processCurrentImagine() {
 		// new generation with defaults
 		newGeneration := &entities.ImageGeneration{
 			Prompt:            promptRes.SanitizedPrompt,
-			NegativePrompt:    negativePrompt,
+			NegativePrompt:    q.currentImagine.Options.NegativePrompt,
 			Width:             defaultWidth,
 			Height:            defaultHeight,
-			RestoreFaces:      true,
+			RestoreFaces:      q.currentImagine.Options.RestoreFaces,
 			EnableHR:          enableHR,
 			HiresWidth:        hiresWidth,
 			HiresHeight:       hiresHeight,
-			DenoisingStrength: 0.7,
-			Seed:              -1,
+			DenoisingStrength: q.currentImagine.Options.DenoisingStrength,
+			Seed:              q.currentImagine.Options.Seed,
 			Subseed:           -1,
 			SubseedStrength:   0,
-			SamplerName:       "Euler a",
-			CfgScale:          9,
-			Steps:             20,
+			SamplerName:       q.currentImagine.Options.SamplerName,
+			CfgScale:          q.currentImagine.Options.CfgScale,
+			Steps:             q.currentImagine.Options.Steps,
 			Processed:         false,
 		}
 
@@ -455,6 +491,11 @@ func (q *queueImpl) processCurrentImagine() {
 
 			// for variations, we need random subseeds
 			newGeneration.Subseed = -1
+
+			// for reroll, we need random seed
+			if q.currentImagine.Type == ItemTypeReroll {
+				newGeneration.Seed = -1
+			}
 
 			// for variations, the subseed strength determines how much variation we get
 			if q.currentImagine.Type == ItemTypeVariation {
@@ -586,6 +627,15 @@ func (q *queueImpl) processImagineGrid(newGeneration *entities.ImageGeneration, 
 		}
 	}()
 
+	// TODO: move this to flags/config
+	// Use grid as one file or 4 separated file
+	var useDistinctImagesGrid bool = true
+
+	returnGrid := true
+	if useDistinctImagesGrid {
+		returnGrid = false
+	}
+
 	resp, err := q.stableDiffusionAPI.TextToImage(&stable_diffusion_api.TextToImageRequest{
 		Prompt:            newGeneration.Prompt,
 		NegativePrompt:    newGeneration.NegativePrompt,
@@ -604,9 +654,18 @@ func (q *queueImpl) processImagineGrid(newGeneration *entities.ImageGeneration, 
 		CfgScale:          newGeneration.CfgScale,
 		Steps:             newGeneration.Steps,
 		NIter:             newGeneration.BatchCount,
+		SaveImages:        true,
+		OverrideSettings: stable_diffusion_api.Txt2ImgOverrideSettings{
+			GridFormat:    "webp",
+			ReturnGrid:    &returnGrid,
+			SamplesFormat: "webp",
+		},
 	})
 	if err != nil {
 		log.Printf("Error processing image: %v\n", err)
+
+		b, err := json.MarshalIndent(newGeneration, "", "\t")
+		log.Printf("req: \n%s\n%v", b, err)
 
 		errorContent := "I'm sorry, but I had a problem imagining your image."
 
@@ -623,21 +682,41 @@ func (q *queueImpl) processImagineGrid(newGeneration *entities.ImageGeneration, 
 
 	log.Printf("Seeds: %v Subseeds:%v", resp.Seeds, resp.Subseeds)
 
-	imageBufs := make([]*bytes.Buffer, len(resp.Images))
+	var files []*discordgo.File
 
-	for idx, image := range resp.Images {
-		decodedImage, decodeErr := base64.StdEncoding.DecodeString(image)
+	if useDistinctImagesGrid {
+		for idx, image := range resp.Images {
+			decodedImage, decodeErr := base64.StdEncoding.DecodeString(image)
+			if decodeErr != nil {
+				log.Printf("Error decoding image: %v\n", decodeErr)
+			}
+
+			files = append(files, &discordgo.File{
+				// Actually undefined file type comes here since it depends on settings set on WEB UI called samples_format (overriding format is not working for txt2img API for some reason).
+				// But it's fine! Discord handles it anyway
+				ContentType: "image/png",
+				Name:        fmt.Sprintf("seed-%d-%s.png", resp.Seeds[idx], resp.Model),
+				Reader:      bytes.NewBuffer(decodedImage),
+			})
+		}
+	} else {
+		decodedGrid, decodeErr := base64.StdEncoding.DecodeString(resp.Images[0])
 		if decodeErr != nil {
 			log.Printf("Error decoding image: %v\n", decodeErr)
 		}
-
-		imageBuf := bytes.NewBuffer(decodedImage)
-
-		imageBufs[idx] = imageBuf
+		files = append(files, &discordgo.File{
+			// Actually undefined file type comes here since it depends on settings set on WEB UI called samples_format (overriding format is not working for txt2img API for some reason).
+			// But it's fine! Discord handles it anyway
+			ContentType: "image/png",
+			Name:        fmt.Sprintf("seeds-%d-%s.png", resp.Seeds, resp.Model),
+			Reader:      bytes.NewBuffer(decodedGrid),
+		})
 	}
 
+	var subGeneration *entities.ImageGeneration
+
 	for idx := range resp.Seeds {
-		subGeneration := &entities.ImageGeneration{
+		subGeneration = &entities.ImageGeneration{
 			InteractionID:     newGeneration.InteractionID,
 			MessageID:         newGeneration.MessageID,
 			MemberID:          newGeneration.MemberID,
@@ -668,38 +747,12 @@ func (q *queueImpl) processImagineGrid(newGeneration *entities.ImageGeneration, 
 		}
 	}
 
-	compositeImage, err := q.compositeRenderer.TileImages(imageBufs)
-	if err != nil {
-		log.Printf("Error tiling images: %v\n", err)
-
-		return err
-	}
-
 	_, err = q.botSession.InteractionResponseEdit(imagine.DiscordInteraction, &discordgo.WebhookEdit{
 		Content: &finishedContent,
-		Files: []*discordgo.File{
-			{
-				ContentType: "image/png",
-				Name:        "imagine.png",
-				Reader:      compositeImage,
-			},
-		},
+		Files:   files,
 		Components: &[]discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
-					discordgo.Button{
-						// Label is what the user will see on the button.
-						Label: "Re-roll",
-						// Style provides coloring of the button. There are not so many styles tho.
-						Style: discordgo.PrimaryButton,
-						// Disabled allows bot to disable some buttons for users.
-						Disabled: false,
-						// CustomID is a thing telling Discord which data to send when this button will be pressed.
-						CustomID: "imagine_reroll",
-						Emoji: discordgo.ComponentEmoji{
-							Name: "🎲",
-						},
-					},
 					discordgo.Button{
 						// Label is what the user will see on the button.
 						Label: "V1",
@@ -750,6 +803,19 @@ func (q *queueImpl) processImagineGrid(newGeneration *entities.ImageGeneration, 
 						CustomID: "imagine_variation_4",
 						Emoji: discordgo.ComponentEmoji{
 							Name: "♻️",
+						},
+					},
+					discordgo.Button{
+						// Label is what the user will see on the button.
+						Label: "Re-roll",
+						// Style provides coloring of the button. There are not so many styles tho.
+						Style: discordgo.PrimaryButton,
+						// Disabled allows bot to disable some buttons for users.
+						Disabled: false,
+						// CustomID is a thing telling Discord which data to send when this button will be pressed.
+						CustomID: "imagine_reroll",
+						Emoji: discordgo.ComponentEmoji{
+							Name: "🎲",
 						},
 					},
 				},
@@ -836,6 +902,11 @@ func upscaleMessageContent(userID string, fetchProgress, upscaleProgress float64
 }
 
 func (q *queueImpl) processUpscaleImagine(imagine *QueueItem) {
+	if true {
+		q.processUpscaleImagineAlternative(q.currentImagine)
+		return
+	}
+
 	interactionID := imagine.DiscordInteraction.ID
 	messageID := ""
 	userID := ""
@@ -937,6 +1008,10 @@ func (q *queueImpl) processUpscaleImagine(imagine *QueueItem) {
 			CfgScale:          generation.CfgScale,
 			Steps:             generation.Steps,
 			NIter:             1,
+			SaveImages:        true,
+			OverrideSettings: stable_diffusion_api.Txt2ImgOverrideSettings{
+				SamplesFormat: "webp",
+			},
 		},
 	})
 	if err != nil {
@@ -973,7 +1048,163 @@ func (q *queueImpl) processUpscaleImagine(imagine *QueueItem) {
 		Files: []*discordgo.File{
 			{
 				ContentType: "image/png",
-				Name:        "imagine.png",
+				Name:        fmt.Sprintf("seed-%d.png", generation.Seed),
+				Reader:      imageBuf,
+			},
+		},
+	})
+	if err != nil {
+		log.Printf("Error editing interaction: %v\n", err)
+
+		return
+	}
+}
+
+func (q *queueImpl) processUpscaleImagineAlternative(imagine *QueueItem) {
+	interactionID := imagine.DiscordInteraction.ID
+	messageID := ""
+	userID := ""
+
+	if imagine.DiscordInteraction.Message != nil {
+		messageID = imagine.DiscordInteraction.Message.ID
+	}
+
+	if imagine.DiscordInteraction.Member != nil && imagine.DiscordInteraction.Member.User != nil {
+		userID = imagine.DiscordInteraction.Member.User.ID
+	} else if imagine.DiscordInteraction.User != nil {
+		userID = imagine.DiscordInteraction.User.ID
+	}
+
+	log.Printf("Upscaling image: %v, Message: %v, Upscale Index: %d",
+		interactionID, messageID, imagine.InteractionIndex)
+
+	generation, err := q.imageGenerationRepo.GetByMessageAndSort(context.Background(), messageID, imagine.InteractionIndex)
+	if err != nil {
+		log.Printf("Error getting image generation: %v", err)
+
+		return
+	}
+
+	log.Printf("Found generation: %v", generation)
+
+	newContent := upscaleMessageContent(userID, 0, 0)
+
+	_, err = q.botSession.InteractionResponseEdit(imagine.DiscordInteraction, &discordgo.WebhookEdit{
+		Content: &newContent,
+	})
+	if err != nil {
+		log.Printf("Error editing interaction: %v", err)
+	}
+
+	generationDone := make(chan bool)
+
+	go func() {
+		lastProgress := float64(0)
+		fetchProgress := float64(0)
+		upscaleProgress := float64(0)
+
+		for {
+			select {
+			case <-generationDone:
+				return
+			case <-time.After(1 * time.Second):
+				progress, progressErr := q.stableDiffusionAPI.GetCurrentProgress()
+				if progressErr != nil {
+					log.Printf("Error getting current progress: %v", progressErr)
+
+					return
+				}
+
+				if progress.Progress == 0 {
+					continue
+				}
+
+				if progress.Progress < lastProgress || upscaleProgress > 0 {
+					upscaleProgress = progress.Progress
+					fetchProgress = 1
+				} else {
+					fetchProgress = progress.Progress
+				}
+
+				lastProgress = progress.Progress
+
+				progressContent := upscaleMessageContent(userID, fetchProgress, upscaleProgress)
+
+				_, progressErr = q.botSession.InteractionResponseEdit(imagine.DiscordInteraction, &discordgo.WebhookEdit{
+					Content: &progressContent,
+				})
+				if progressErr != nil {
+					log.Printf("Error editing interaction: %v", err)
+				}
+			}
+		}
+	}()
+
+	//generation.EnableHR = true
+	const hiresCoeff = 2
+	//// Round up to the nearest 8
+	generation.HiresWidth = (int(float32(generation.HiresWidth)*hiresCoeff) + 7) & (-8)
+	generation.HiresHeight = (int(float32(generation.HiresHeight)*hiresCoeff) + 7) & (-8)
+
+	resp, err := q.stableDiffusionAPI.TextToImage(&stable_diffusion_api.TextToImageRequest{
+		Prompt:         generation.Prompt,
+		NegativePrompt: generation.NegativePrompt,
+		Width:          generation.Width,
+		Height:         generation.Height,
+		RestoreFaces:   generation.RestoreFaces,
+		EnableHR:       true,
+		//HrScale:           2,
+		HrUpscaler:        "4x_escale_100000_G",
+		HRResizeX:         generation.HiresWidth,
+		HRResizeY:         generation.HiresHeight,
+		DenoisingStrength: generation.DenoisingStrength,
+		BatchSize:         generation.BatchSize,
+		Seed:              generation.Seed,
+		Subseed:           generation.Subseed,
+		SubseedStrength:   generation.SubseedStrength,
+		SamplerName:       generation.SamplerName,
+		CfgScale:          generation.CfgScale,
+		Steps:             generation.Steps,
+		NIter:             1,
+		SaveImages:        true,
+		OverrideSettings: stable_diffusion_api.Txt2ImgOverrideSettings{
+			SamplesFormat: "webp",
+		},
+	})
+	if err != nil {
+		log.Printf("Error processing image upscale: %v\n", err)
+
+		errorContent := "I'm sorry, but I had a problem upscaling your image."
+
+		_, err = q.botSession.InteractionResponseEdit(imagine.DiscordInteraction, &discordgo.WebhookEdit{
+			Content: &errorContent,
+		})
+
+		return
+	}
+
+	generationDone <- true
+
+	decodedImage, decodeErr := base64.StdEncoding.DecodeString(resp.Images[0])
+	if decodeErr != nil {
+		log.Printf("Error decoding image: %v\n", decodeErr)
+
+		return
+	}
+	imageBuf := bytes.NewBuffer(decodedImage)
+
+	log.Printf("Successfully upscaled image: %v, Message: %v, Upscale Index: %d",
+		interactionID, messageID, imagine.InteractionIndex)
+
+	finishedContent := fmt.Sprintf("<@%s> asked me to upscale their image. Here's the result:",
+		userID)
+
+	_, err = q.botSession.InteractionResponseEdit(imagine.DiscordInteraction, &discordgo.WebhookEdit{
+		Content: &finishedContent,
+		Files: []*discordgo.File{
+			{
+				ContentType: "image/png",
+				Name:        fmt.Sprintf("seed-%d.png", generation.Seed),
 				Reader:      imageBuf,
 			},
 		},

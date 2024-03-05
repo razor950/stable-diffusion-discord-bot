@@ -12,4 +12,3 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - SD_API_HOST=${SD_API_HOST}
       - DISCORD_GUILDID=${DISCORD_GUILDID}
-    command: -token ${DISCORD_TOKEN} -host ${SD_API_HOST} -guild ${DISCORD_GUILDID}
