@@ -349,3 +349,84 @@ func (api *apiImpl) GetEmbeddings() (*EmbeddingsResponseMinimal, error) {
 
 	return resp, nil
 }
+
+type ModelEntry struct {
+	Title     string      `json:"title"`
+	ModelName string      `json:"model_name"`
+	Filename  string      `json:"filename"`
+	Type      string      `json:"type"`
+	SHA256    string      `json:"sha256"`
+	Hash      string      `json:"hash"`
+	Config    interface{} `json:"config"`
+}
+
+type ModelsResponse []ModelEntry
+
+func (api *apiImpl) GetModels() ([]string, error) {
+	getURL := api.host + "/sdapi/v1/sd-models"
+
+	request, err := http.NewRequest("GET", getURL, nil)
+	if err != nil {
+		log.Printf("Failed to create request for URL: %s, error: %v", getURL, err)
+		return nil, err
+	}
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		log.Printf("API URL: %s", getURL)
+		log.Printf("Error with API Request: %v", err)
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		log.Printf("Failed to read response body, error: %v", err)
+		return nil, err
+	}
+
+	var models ModelsResponse
+	err = json.Unmarshal(body, &models)
+	if err != nil {
+		log.Printf("API URL: %s", getURL)
+		log.Printf("Unexpected API response: %s", string(body))
+		return nil, err
+	}
+
+	var titles []string
+	for _, model := range models {
+		titles = append(titles, model.Title)
+	}
+
+	return titles, nil
+}
+
+func (api *apiImpl) SetSelectedModel(selectedModel string) error {
+	postURL := api.host + "/sdapi/v1/options"
+
+	payload := map[string]string{
+		"sd_model_checkpoint": selectedModel,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	request, err := http.NewRequest("POST", postURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	return nil
+}

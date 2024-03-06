@@ -59,6 +59,14 @@ func (b *botImpl) imagineSettingsCommandString() string {
 	return b.imagineCommand + "_settings"
 }
 
+func (b *botImpl) changeModelCommandString() string {
+	if b.developmentMode {
+		return "dev_" + b.imagineCommand + "_change_model"
+	}
+
+	return b.imagineCommand + "_change_model"
+}
+
 func New(cfg Config) (Bot, error) {
 	if cfg.BotToken == "" {
 		return nil, errors.New("missing bot token")
@@ -119,6 +127,11 @@ func New(cfg Config) (Bot, error) {
 		return nil, err
 	}
 
+	err = bot.addChangeModelCommand()
+	if err != nil {
+		return nil, err
+	}
+
 	botSession.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		switch i.Type {
 		case discordgo.InteractionApplicationCommand:
@@ -129,6 +142,8 @@ func New(cfg Config) (Bot, error) {
 				bot.processImagineExtCommand(s, i)
 			case bot.imagineSettingsCommandString():
 				bot.processImagineSettingsCommand(s, i)
+			case bot.changeModelCommandString():
+				bot.processModelSettingsCommand(s, i)
 			default:
 				log.Printf("Unknown command '%v'", i.ApplicationCommandData().Name)
 			}
@@ -251,6 +266,8 @@ func New(cfg Config) (Bot, error) {
 				}
 
 				bot.processImagineBatchSetting(s, i, batchCountInt, batchSizeInt)
+			case customID == "imagine_change_model":
+				bot.processChangeModel(s, i)
 			default:
 				log.Printf("Unknown message component '%v'", i.MessageComponentData().CustomID)
 			}
@@ -331,8 +348,7 @@ const (
 )
 
 func (b *botImpl) addImagineExtCommand() error {
-	command := b.imagineExtCommandString()
-	log.Printf("Adding command '%s'...", command)
+	log.Printf("Adding command '%s'...", b.imagineExtCommandString())
 
 	minNum := 1.0
 	commandOptions := []*discordgo.ApplicationCommandOption{
@@ -416,8 +432,8 @@ func (b *botImpl) addImagineExtCommand() error {
 					Value: "Euler a",
 				},
 				{
-					Name:  "DPM++ SDE Karras",
-					Value: "DPM++ SDE Karras",
+					Name:  "DPM SDE",
+					Value: "DPM SDE",
 				},
 			},
 		},
@@ -462,13 +478,12 @@ func (b *botImpl) addImagineExtCommand() error {
 	}
 
 	cmd, err := b.botSession.ApplicationCommandCreate(b.botSession.State.User.ID, b.guildID, &discordgo.ApplicationCommand{
-		Name:        command,
+		Name:        b.imagineExtCommandString(),
 		Description: "Ask the bot to imagine something",
 		Options:     commandOptions,
 	})
 	if err != nil {
-		log.Printf("Error creating '%s' command: %v", command, err)
-
+		log.Printf("Error creating '%s' command: %v", b.imagineExtCommandString(), err)
 		return err
 	}
 
@@ -486,13 +501,55 @@ func (b *botImpl) addImagineSettingsCommand() error {
 	})
 	if err != nil {
 		log.Printf("Error creating '%s' command: %v", b.imagineSettingsCommandString(), err)
-
 		return err
 	}
 
 	b.registeredCommands = append(b.registeredCommands, cmd)
 
 	return nil
+}
+
+func (b *botImpl) addChangeModelCommand() error {
+	log.Printf("Adding command '%s'...", b.changeModelCommandString())
+
+	cmd, err := b.botSession.ApplicationCommandCreate(b.botSession.State.User.ID, b.guildID, &discordgo.ApplicationCommand{
+		Name:        b.changeModelCommandString(),
+		Description: "Change the model used for the imagine command",
+	})
+	if err != nil {
+		log.Printf("Error creating '%s' command: %v", b.changeModelCommandString(), err)
+		return err
+	}
+
+	b.registeredCommands = append(b.registeredCommands, cmd)
+
+	return nil
+}
+
+func (b *botImpl) processChangeModel(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		log.Printf("Error deferring interaction: %v", err)
+		return
+	}
+
+	selectedModel := i.MessageComponentData().Values[0] // grab the value from selected model
+
+	// set selected model via stable diffusion API
+	if err := b.stableDiffusionAPI.SetSelectedModel(selectedModel); err != nil {
+		log.Printf("Failed to post selected model: %v", err)
+		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+			Content: "Error updating the model. Please try again.",
+		})
+		return
+	}
+
+	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Content: "Model updated successfully.",
+	})
+
 }
 
 func (b *botImpl) processImagineReroll(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -582,7 +639,7 @@ func (b *botImpl) processImagineCommand(s *discordgo.Session, i *discordgo.Inter
 
 		position, queueError = b.imagineQueue.AddImagine(&imagine_queue.QueueItem{
 			Prompt:             prompt,
-			NegativePrompt:     negative,
+			Options:            imagine_queue.NewQueueItemOptions(),
 			Type:               imagine_queue.ItemTypeImagine,
 			DiscordInteraction: i.Interaction,
 		})
@@ -800,6 +857,58 @@ func (b *botImpl) processImagineSettingsCommand(s *discordgo.Session, i *discord
 	})
 	if err != nil {
 		log.Printf("Error responding to interaction: %v", err)
+	}
+}
+
+func (b *botImpl) processModelSettingsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	modelTitles, err := b.stableDiffusionAPI.GetModels()
+	if err != nil {
+		log.Printf("Error fetching model titles: %v", err)
+		return
+	}
+
+	messageComponents := changeModelMessageComponents(modelTitles)
+
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:    "Choose a model for the imagine command:",
+			Components: messageComponents,
+		},
+	})
+	if err != nil {
+		log.Printf("Error responding to interaction: %v", err)
+	}
+}
+
+func changeModelMessageComponents(models []string) []discordgo.MessageComponent {
+	minValues := 1
+
+	options := make([]discordgo.SelectMenuOption, len(models))
+	for i, title := range models {
+		options[i] = discordgo.SelectMenuOption{
+			Label: title,
+			Value: title,
+		}
+
+		// Discord limits the number of choices to 25
+		if len(options) == 25 {
+			log.Printf("Loaded 25/%d models...", len(models))
+			break
+		}
+	}
+
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.SelectMenu{
+					CustomID:  "imagine_change_model",
+					MinValues: &minValues,
+					MaxValues: 1,
+					Options:   options,
+				},
+			},
+		},
 	}
 }
 

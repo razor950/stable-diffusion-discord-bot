@@ -5,4 +5,6 @@ type StableDiffusionAPI interface {
 	UpscaleImage(upscaleReq *UpscaleRequest) (*UpscaleResponse, error)
 	GetCurrentProgress() (*ProgressResponse, error)
 	GetEmbeddings() (*EmbeddingsResponseMinimal, error)
+	GetModels() ([]string, error)
+	SetSelectedModel(string) error
 }
